@@ -20,19 +20,21 @@ class TransformerDecoderLayer(nn.Module):
 
     Attributes:
         layer_norm_1 (nn.LayerNorm): Layer normalization before self-attention.
-        layer_norm_2 (nn.LayerNorm): Layer normalization before feed-forward network.
+        layer_norm_2 (nn.LayerNorm): Layer normalization before cross-attention.
+        layer_norm_3 (nn.LayerNorm): Layer normalization before feed-forward network.
         self_attention (MultiHeadAttention): Masked multi-head self-attention mechanism.
+        cross_attention (MultiHeadAttention): Encoder-decoder attention mechanism.
         feed_forward (FeedForward): Feed-forward neural network.
     """
 
     def __init__(self, d_model: int, num_attention_heads: int, intermediate_size: int):
         super(TransformerDecoderLayer, self).__init__()
-        self.layer_norm_1 = None
-        self.layer_norm_2 = None
-        self.layer_norm_3 = None
-        self.self_attention = None
-        self.cross_attention = None
-        self.feed_forward = None
+        self.layer_norm_1 = nn.LayerNorm(d_model)
+        self.layer_norm_2 = nn.LayerNorm(d_model)
+        self.layer_norm_3 = nn.LayerNorm(d_model)
+        self.self_attention = MultiHeadAttention(d_model, num_attention_heads)
+        self.cross_attention = MultiHeadAttention(d_model, num_attention_heads)
+        self.feed_forward = FeedForward(d_model, intermediate_size)
 
     def forward(self, x: torch.Tensor, enc_output: torch.Tensor, tgt_mask: torch.Tensor) -> torch.Tensor:
         """Forward pass through the Transformer decoder layer.
@@ -46,15 +48,18 @@ class TransformerDecoderLayer(nn.Module):
             torch.Tensor: Output tensor of shape (batch_size, seq_len, d_model).
         """
         # Apply layer normalization and masked multi-head self-attention
-        hidden_state = None
-        x = None
+        hidden_state = self.layer_norm_1(x)
+        attention_output = self.self_attention(hidden_state, hidden_state, hidden_state, mask=tgt_mask)
+        x = x + attention_output
 
         # Apply layer normalization and cross-attention
-        hidden_state = None
-        x = None
-        
+        hidden_state = self.layer_norm_2(x)
+        cross_attention_output = self.cross_attention(hidden_state, enc_output, enc_output)
+        x = x + cross_attention_output
+
         # Apply layer normalization and feed-forward network
-        x = None
+        hidden_state = self.layer_norm_3(x)
+        x = x + self.feed_forward(hidden_state)
 
         return x
 
@@ -78,10 +83,13 @@ class TransformerDecoder(nn.Module):
     """
 
     def __init__(self, vocab_size: int, max_position_embeddings: int, d_model: int,
-                num_attention_heads: int, intermediate_size: int, num_hidden_layers: int):
+                 num_attention_heads: int, intermediate_size: int, num_hidden_layers: int):
         super(TransformerDecoder, self).__init__()
-        self.embeddings = None
-        self.layers = None
+        self.embeddings = Embeddings(vocab_size, max_position_embeddings, d_model)
+        self.layers = nn.ModuleList(
+            [TransformerDecoderLayer(d_model, num_attention_heads, intermediate_size)
+             for _ in range(num_hidden_layers)]
+        )
 
     def forward(self, input_ids: torch.Tensor, enc_output: torch.Tensor) -> torch.Tensor:
         """Forward pass through the Transformer decoder.
@@ -94,14 +102,14 @@ class TransformerDecoder(nn.Module):
             torch.Tensor: Output tensor of shape (batch_size, seq_len, d_model).
         """
         # Generate token embeddings
-        x = None
+        x = self.embeddings(input_ids)
         batch_size, seq_len, _ = x.size()
 
-        # Generate causal mask for target tensor
-        tgt_mask = None
+        # Generate causal mask for target tensor: shape (batch_size, seq_len, seq_len)
+        causal = torch.triu(torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool), diagonal=1)
+        tgt_mask = causal.unsqueeze(0).expand(batch_size, -1, -1)
 
         for layer in self.layers:
             x = layer(x, enc_output, tgt_mask)
 
         return x
-
